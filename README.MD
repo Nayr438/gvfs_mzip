@@ -11,4 +11,4 @@ Not sure what works and what doesn't, MZipRecovery appears to no longer be used 
 May come back to this in the future but for now it's unmaintained.
 
 A demo from before the rewrite
-[![gvfs_mzip demo](https://img.youtube.com/vi/Cs0duLUxQew/hqdefault.jpg)](https://www.youtube.com/embed/Cs0duLUxQew)
+[![Youtube Video]()](https://www.youtube.com/watch?v=Cs0duLUxQew)
