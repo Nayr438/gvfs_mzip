@@ -10,5 +10,6 @@ Not sure what works and what doesn't, MZipRecovery appears to no longer be used 
 
 May come back to this in the future but for now it's unmaintained.
 
-A demo from before the rewrite
+A demo from before the rewrite, but this one works similarly. If I find the old one I will upload it as well.
+
 [![Youtube Video]()](https://www.youtube.com/watch?v=Cs0duLUxQew)
