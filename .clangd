@@ -1,0 +1,4 @@
+CompileFlags:
+  CompilationDatabase: builddir
+  Add:
+    - "-std=c++20"

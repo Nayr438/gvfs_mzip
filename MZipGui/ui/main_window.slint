@@ -1,0 +1,53 @@
+import { Button, VerticalBox, HorizontalBox, ListView, TextInput, Label } from "std-widgets.slint";
+
+export component MainWindow inherits Window {
+    title: "MZip Archive Manager";
+    width: 850px;
+    height: 600px;
+
+    VerticalBox {
+        // Menu bar
+        HorizontalBox {
+            Button {
+                text: "Open Archive";
+                clicked => { root.open-archive(); }
+            }
+            Button {
+                text: "Extract Selected";
+                clicked => { root.extract-files(); }
+            }
+        }
+
+        // Search box
+        HorizontalBox {
+            Label {
+                text: "Search:";
+            }
+            TextInput {
+                placeholder-text: "Search files...";
+                text-changed => { root.search-changed(self.text); }
+            }
+        }
+
+        // File list
+        ListView {
+            model: root.file-list;
+            on-item-clicked => { root.file-selected(index); }
+        }
+
+        // Status bar
+        Label {
+            text: root.status-text;
+        }
+    }
+
+    // Callbacks
+    callback open-archive();
+    callback extract-files();
+    callback search-changed(string);
+    callback file-selected(int);
+
+    // Data
+    property <[string]> file-list: [];
+    property <string> status-text: "Ready";
+} 

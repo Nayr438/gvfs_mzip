@@ -1,0 +1,28 @@
+{
+    "clangd.arguments": [
+        "--all-scopes-completion=true",
+        "--background-index=true",
+        "--background-index-priority=low",
+        "--clang-tidy=true",
+        "--completion-parse=auto",
+        "--completion-style=detailed",
+        "--debug-origin=false",
+        "--fallback-style=LLVM",
+        "--function-arg-placeholders=true",
+        "--header-insertion=iwyu",
+        "--header-insertion-decorators=true",
+        "--import-insertions=false",
+        "--include-ineligible-results=false",
+        "--limit-references=1000",
+        "--limit-results=100",
+        "--ranking-model=decision_forest",
+        "--rename-file-limit=50",
+        "--malloc-trim=true",
+        "--parse-forwarding-functions=false",
+        "--pch-storage=disk",
+        "--use-dirty-headers=false"
+    ],
+    "mesonbuild.configureOnOpen": true,
+    "C_Cpp.default.compileCommands": "/home/chris/Projects/gvfs/builddir/compile_commands.json",
+    "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild"
+}
