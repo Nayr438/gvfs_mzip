@@ -3,11 +3,9 @@
 #include "MZipConstants.h"
 #include "ZipStructs.h"
 #include "ZipTrie.h"
-#include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <zlib.h>
-
 
 //------------------------------------------------------------------------------
 // Constructor
@@ -31,8 +29,13 @@ bool MZip::openArchive()
   auto dirEnd = getEndRecord();
   archiveFile->seek(dirEnd.CentralDirectoryOffset, std::ios::beg);
 
+  if (dirEnd.Signature != mzip::CentralDirectoryEndSignatureLegacy && dirEnd.Signature != mzip::CentralDirectoryEndSignature)
+    return false;
+
   return buildArchiveTree(dirEnd);
 }
+
+bool MZip::openArchiveForced() { return openArchive(); }
 
 //------------------------------------------------------------------------------
 // File operations
@@ -44,17 +47,18 @@ std::shared_ptr<char[]> MZip::GetFile(std::string_view fileName)
   if (!node || !node->isFile())
     return nullptr;
 
-  // Read local header
   archiveFile->seek(node->fileData->FileHeaderOffset, std::ios::beg);
 
-  zip::LocalFileHeader header{};
-  fetchHeaderData(&header);
+  if (_version != mzip::Version::ForcedRecovery)
+  {
+    zip::LocalFileHeader header{};
+    fetchHeaderData(&header);
 
-  if (!checkSignature(header))
-    return nullptr;
+    if (!checkSignature(header))
+      return nullptr;
 
-  // Skip name and extra fields
-  archiveFile->seek(header.FileNameLength + header.ExtraFieldLength, std::ios::cur);
+    archiveFile->seek(header.FileNameLength + header.ExtraFieldLength, std::ios::cur);
+  }
 
   auto uncompressedData = std::make_shared<char[]>(node->fileData->UncompressedSize);
 

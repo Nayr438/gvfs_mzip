@@ -1,7 +1,11 @@
 #include "MZipRecovery.h"
-#include "zlib.h"
+#include "DosDateTime.h"
+#include "MZip.h"
+#include "MZipConstants.h"
+#include "ZipStructs.h"
 #include <cstring>
 #include <iostream>
+#include <zlib.h>
 
 bool MZipRecovery::openArchiveForced()
 {
@@ -9,29 +13,30 @@ bool MZipRecovery::openArchiveForced()
             << "Files will not have names, some files may be missing, and some data may be invalid.\n"
             << "This does not guarantee any valid data will be found.\n";
 
-  std::ifstream file(archivePath, std::ios::binary);
-  if (!file)
+  archiveFile = std::make_unique<MZFile>(archivePath);
+  if (!archiveFile->is_open())
     return false;
 
   // Get initial signature and file size
-  std::uint32_t signature = 0;
-  file.read(reinterpret_cast<char *>(&signature), sizeof signature);
+  std::uint32_t signature = archiveFile->getSignature();
 
   const auto fileSize = std::filesystem::file_size(archivePath) - sizeof(zip::EndOfCentralDirectoryRecord);
   if (fileSize == 0)
     return false;
 
-  version = mzip::Version::ForcedRecovery;
-  file.seekg(0, std::ios::beg);
+  _version = mzip::Version::ForcedRecovery;
+  ArchiveTree = std::make_shared<ZipTrie>();
+  archiveFile->seek(0);
 
   // Scan file for matching signatures
   std::vector<std::streampos> signaturePositions;
   std::vector<char> buffer(4096);
 
-  while (file && file.tellg() < static_cast<std::streamoff>(fileSize))
+  while (archiveFile->good() && archiveFile->tellg() < static_cast<std::streamoff>(fileSize))
   {
-    file.read(buffer.data(), buffer.size());
-    const auto bytesRead = static_cast<size_t>(file.gcount());
+    archiveFile->read(buffer.data(), buffer.size());
+    const auto bytesRead =
+        static_cast<size_t>(archiveFile->tellg() - (archiveFile->tellg() - static_cast<std::streampos>(buffer.size())));
     if (bytesRead < 4)
       break;
 
@@ -43,13 +48,14 @@ bool MZipRecovery::openArchiveForced()
 
       if (currentSignature == signature)
       {
-        signaturePositions.push_back(file.tellg() - static_cast<std::streampos>(bytesRead) + static_cast<std::streampos>(i));
+        signaturePositions.push_back(archiveFile->tellg() - static_cast<std::streampos>(bytesRead) +
+                                     static_cast<std::streampos>(i));
       }
     }
 
     // Back up to catch split signatures
     if (bytesRead >= 3)
-      file.seekg(-3, std::ios::cur);
+      archiveFile->seek(-3, std::ios::cur);
   }
 
   std::cout << "Found " << signaturePositions.size() << " signatures\n";
@@ -65,26 +71,31 @@ bool MZipRecovery::openArchiveForced()
     std::cout << "Searching for data at position " << currentPos << " for file at position " << pos << "\n";
 
     // Skip LocalFileHeader when reading data
-    file.clear();
-    file.seekg(currentPos + static_cast<std::streamoff>(sizeof(zip::LocalFileHeader)), std::ios::beg);
-    if (file.fail())
+    archiveFile->clear();
+    archiveFile->seek(currentPos + static_cast<std::streamoff>(sizeof(zip::LocalFileHeader)), std::ios::beg);
+    if (!archiveFile->good())
       continue;
 
     auto compressedData = std::make_unique<char[]>(size);
-    file.read(compressedData.get(), size);
+    archiveFile->read(compressedData.get(), size);
 
-    zip::CentralDirectoryFileHeader dirHeader{.CompressionMethod = 8,
-                                              .LastModified = DOSDateTime(std::filesystem::last_write_time(archivePath)),
-                                              .CompressedSize = static_cast<uint32_t>(size),
-                                              .UncompressedSize = static_cast<uint32_t>(size * 2),
-                                              .FileHeaderOffset = static_cast<uint32_t>(currentPos)};
+    zip::CentralDirectoryFileHeader dirHeader{};
+    dirHeader.Signature = mzip::CentralDirectorySignature;
+    dirHeader.CompressionMethod = 8;
+    dirHeader.LastModified = DOSDateTime(std::filesystem::last_write_time(archivePath));
+    dirHeader.CompressedSize = static_cast<uint32_t>(size);
+    dirHeader.UncompressedSize = static_cast<uint32_t>(size * 2);
+    dirHeader.FileHeaderOffset =
+        static_cast<uint32_t>(currentPos + static_cast<std::streamoff>(sizeof(zip::LocalFileHeader)));
 
     std::string fileName = "file_" + std::to_string(pos);
     if (findData(std::span{compressedData.get(), size}, dirHeader, fileName))
     {
-      ArchiveTree.insert(std::filesystem::path(fileName), dirHeader);
+      ArchiveTree->insert(std::filesystem::path(fileName), toNodeFileHeader(dirHeader));
     }
   }
+
+  archiveFile->clear();
 
   return !signaturePositions.empty();
 }
@@ -97,11 +108,11 @@ bool MZipRecovery::findData(std::span<char> inData, zip::CentralDirectoryFileHea
   // Try each possible starting position
   for (size_t offset = 0; offset < inData.size() - 1; offset++)
   {
-
-    z_stream stream{.next_in = reinterpret_cast<Bytef *>(inData.data() + offset),
-                    .avail_in = static_cast<uInt>(inData.size() - offset),
-                    .next_out = reinterpret_cast<Bytef *>(uncompressedData.get()),
-                    .avail_out = maxSize};
+    z_stream stream{};
+    stream.next_in = reinterpret_cast<Bytef *>(inData.data() + offset);
+    stream.avail_in = static_cast<uInt>(inData.size() - offset);
+    stream.next_out = reinterpret_cast<Bytef *>(uncompressedData.get());
+    stream.avail_out = maxSize;
 
     if (inflateInit2(&stream, -MAX_WBITS) != Z_OK)
     {
@@ -109,7 +120,7 @@ bool MZipRecovery::findData(std::span<char> inData, zip::CentralDirectoryFileHea
       continue;
     }
 
-    int status = inflate(&stream, Z_FINISH);
+    int status = ::inflate(&stream, Z_FINISH);
     inflateEnd(&stream);
 
     if (status == Z_STREAM_END && stream.total_in <= stream.total_out)
@@ -125,6 +136,8 @@ bool MZipRecovery::findData(std::span<char> inData, zip::CentralDirectoryFileHea
       header.UncompressedSize = stream.total_out;
       header.CRC32 = crc;
 
+      header.FileHeaderOffset += offset;
+
       std::uint64_t signature;
       std::memcpy(&signature, uncompressedData.get(), sizeof(signature));
 
@@ -133,6 +146,7 @@ bool MZipRecovery::findData(std::span<char> inData, zip::CentralDirectoryFileHea
 
       std::cout << std::format("Offset: {} CompressedSize: {} UncompressedSize: {} CRC32: {} File Signature: 0x{:x}\n",
                                offset, stream.total_in, stream.total_out, crc, signature);
+
       return true;
     }
   }

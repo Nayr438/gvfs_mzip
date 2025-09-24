@@ -23,6 +23,6 @@
         "--use-dirty-headers=false"
     ],
     "mesonbuild.configureOnOpen": true,
-    "C_Cpp.default.compileCommands": "/home/chris/Projects/gvfs/builddir/compile_commands.json",
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/builddir/compile_commands.json",
     "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild"
 }

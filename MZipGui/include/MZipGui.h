@@ -8,6 +8,7 @@
 #include <vector>
 #include <filesystem>
 #include "MZip.h"
+#include "MZipRecovery.h"
 #include <QAbstractItemModel>
 
 // Custom model for ZipTrie

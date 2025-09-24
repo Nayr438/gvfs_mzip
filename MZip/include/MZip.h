@@ -19,6 +19,8 @@
 #include "ZipTrie.h"
 #include "zlib.h"
 
+class MZipRecovery;
+
 class MZip
 {
   friend class MZipRecovery;
@@ -28,7 +30,7 @@ public:
 
   // Core operations
   bool openArchive();
-  bool openArchiveForced();
+  virtual bool openArchiveForced();
 
   // File operations
   std::shared_ptr<char[]> GetFile(std::string_view fileName);

@@ -35,6 +35,7 @@ public:
   void close() { file_.close(); }
   bool is_open() const { return file_.is_open(); }
   bool good() const { return file_.good(); }
+  void clear() { file_.clear(); }
 
   template <typename T> void read(T *value, std::streamsize size = sizeof(T))
   {

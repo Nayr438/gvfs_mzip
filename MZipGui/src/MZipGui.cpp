@@ -1,4 +1,6 @@
 #include "MZipGui.h"
+#include <QAbstractItemModel>
+#include <QApplication>
 #include <QDesktopServices>
 #include <QDrag>
 #include <QFileDialog>
@@ -18,91 +20,101 @@
 #include <QVBoxLayout>
 #include <functional>
 #include <set>
-#include <QAbstractItemModel>
-#include <QApplication>
 
 // Helper: format file size in human-readable form
 static QString humanReadableSize(quint64 size)
 {
-    const char *suffixes[] = {"B", "KB", "MB", "GB", "TB"};
-    double s = static_cast<double>(size);
-    int i = 0;
-    while (s >= 1024.0 && i < 4) {
-        s /= 1024.0;
-        ++i;
-    }
-    return QString::number(s, 'f', (i == 0) ? 0 : 2) + " " + suffixes[i];
+  const char *suffixes[] = {"B", "KB", "MB", "GB", "TB"};
+  double s = static_cast<double>(size);
+  int i = 0;
+  while (s >= 1024.0 && i < 4)
+  {
+    s /= 1024.0;
+    ++i;
+  }
+  return QString::number(s, 'f', (i == 0) ? 0 : 2) + " " + suffixes[i];
 }
 
 // Expansion state helpers
 static std::string indexToPath(const QAbstractItemModel *model, const QModelIndex &index)
 {
-    std::vector<std::string> parts;
-    QModelIndex current = index;
-    while (current.isValid()) {
-        parts.push_back(model->data(current, Qt::DisplayRole).toString().toStdString());
-        current = current.parent();
-    }
-    std::string path;
-    for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
-        if (!path.empty()) path += '/';
-        path += *it;
-    }
-    return path;
+  std::vector<std::string> parts;
+  QModelIndex current = index;
+  while (current.isValid())
+  {
+    parts.push_back(model->data(current, Qt::DisplayRole).toString().toStdString());
+    current = current.parent();
+  }
+  std::string path;
+  for (auto it = parts.rbegin(); it != parts.rend(); ++it)
+  {
+    if (!path.empty())
+      path += '/';
+    path += *it;
+  }
+  return path;
 }
 
 static void collectExpandedPaths(const QTreeView *view, const QAbstractItemModel *model, std::set<std::string> &out,
                                  const QModelIndex &parent = QModelIndex())
 {
-    int rowCount = model->rowCount(parent);
-    for (int row = 0; row < rowCount; ++row) {
-        QModelIndex idx = model->index(row, 0, parent);
-        if (view->isExpanded(idx)) {
-            out.insert(indexToPath(model, idx));
-            collectExpandedPaths(view, model, out, idx);
-        }
+  int rowCount = model->rowCount(parent);
+  for (int row = 0; row < rowCount; ++row)
+  {
+    QModelIndex idx = model->index(row, 0, parent);
+    if (view->isExpanded(idx))
+    {
+      out.insert(indexToPath(model, idx));
+      collectExpandedPaths(view, model, out, idx);
     }
+  }
 }
 
 static void expandByPath(QTreeView *view, const QAbstractItemModel *model, const std::set<std::string> &paths,
                          const QModelIndex &parent = QModelIndex(), const std::string &parentPath = "")
 {
-    int rowCount = model->rowCount(parent);
-    for (int row = 0; row < rowCount; ++row) {
-        QModelIndex idx = model->index(row, 0, parent);
-        std::string name = model->data(idx, Qt::DisplayRole).toString().toStdString();
-        std::string fullPath = parentPath.empty() ? name : parentPath + "/" + name;
-        if (paths.count(fullPath)) {
-            view->expand(idx);
-        }
-        if (model->data(idx, Qt::UserRole).toInt() == 0) {
-            expandByPath(view, model, paths, idx, fullPath);
-        }
+  int rowCount = model->rowCount(parent);
+  for (int row = 0; row < rowCount; ++row)
+  {
+    QModelIndex idx = model->index(row, 0, parent);
+    std::string name = model->data(idx, Qt::DisplayRole).toString().toStdString();
+    std::string fullPath = parentPath.empty() ? name : parentPath + "/" + name;
+    if (paths.count(fullPath))
+    {
+      view->expand(idx);
     }
+    if (model->data(idx, Qt::UserRole).toInt() == 0)
+    {
+      expandByPath(view, model, paths, idx, fullPath);
+    }
+  }
 }
 
 static std::set<std::string> lastExpansionState;
 
 // Helper: filter a ZipTrie by search text (case-insensitive, matches any part of path)
-static std::unique_ptr<ZipTrie> filterTrie(const ZipTrie& original, const QString& searchText) {
-    auto filtered = std::make_unique<ZipTrie>();
-    std::function<bool(const std::filesystem::path&, const ZipTrieNode&)> filterNode;
-    filterNode = [&](const std::filesystem::path& path, const ZipTrieNode& node) -> bool {
-        bool match = searchText.isEmpty() ||
-                     QString::fromStdString(path.string()).contains(searchText, Qt::CaseInsensitive);
-        bool anyChildMatched = false;
-        for (const auto& [name, childPtr] : node.children) {
-            if (filterNode(path / name, *childPtr))
-                anyChildMatched = true;
-        }
-        if ((match && node.isFile()) || anyChildMatched) {
-            filtered->insert(path, node.isFile() ? node.fileData : std::nullopt);
-            return true;
-        }
-        return false;
-    };
-    filterNode({}, original.root());
-    return filtered;
+static std::unique_ptr<ZipTrie> filterTrie(const ZipTrie &original, const QString &searchText)
+{
+  auto filtered = std::make_unique<ZipTrie>();
+  std::function<bool(const std::filesystem::path &, const ZipTrieNode &)> filterNode;
+  filterNode = [&](const std::filesystem::path &path, const ZipTrieNode &node) -> bool
+  {
+    bool match = searchText.isEmpty() || QString::fromStdString(path.string()).contains(searchText, Qt::CaseInsensitive);
+    bool anyChildMatched = false;
+    for (const auto &[name, childPtr] : node.children)
+    {
+      if (filterNode(path / name, *childPtr))
+        anyChildMatched = true;
+    }
+    if ((match && node.isFile()) || anyChildMatched)
+    {
+      filtered->insert(path, node.isFile() ? node.fileData : std::nullopt);
+      return true;
+    }
+    return false;
+  };
+  filterNode({}, original.root());
+  return filtered;
 }
 
 MZipGui::MZipGui(QWidget *parent) : QMainWindow(parent), currentArchive(nullptr) { setupUi(); }
@@ -211,7 +223,11 @@ void MZipGui::setupSearchBox()
 void MZipGui::loadArchive(const std::filesystem::path &path)
 {
   currentArchive = std::make_unique<MZip>(path.string());
-  currentArchive->openArchive();
+  if(currentArchive->openArchive() == false)
+  {
+    currentArchive = std::make_unique<MZipRecovery>(path.string());
+    currentArchive->openArchiveForced();
+  }
   updateFileList();
 }
 
@@ -357,23 +373,27 @@ void MZipGui::showContextMenu(const QPoint &pos)
 
 void MZipGui::filterTree(const QString &searchText)
 {
-    if (!currentArchive)
-        return;
-    bool clearingSearch = searchText.isEmpty();
-    if (clearingSearch) {
-        lastExpansionState.clear();
-        collectExpandedPaths(fileView, model, lastExpansionState);
-        filteredTrie.reset();
-        model->setTrie(currentArchive->getTree().get());
-    } else {
-        filteredTrie = filterTrie(*currentArchive->getTree(), searchText);
-        model->setTrie(filteredTrie.get());
-    }
-    fileView->collapseAll();
-    fileView->sortByColumn(0, Qt::AscendingOrder);
-    if (clearingSearch) {
-        expandByPath(fileView, model, lastExpansionState);
-    }
+  if (!currentArchive)
+    return;
+  bool clearingSearch = searchText.isEmpty();
+  if (clearingSearch)
+  {
+    lastExpansionState.clear();
+    collectExpandedPaths(fileView, model, lastExpansionState);
+    filteredTrie.reset();
+    model->setTrie(currentArchive->getTree().get());
+  }
+  else
+  {
+    filteredTrie = filterTrie(*currentArchive->getTree(), searchText);
+    model->setTrie(filteredTrie.get());
+  }
+  fileView->collapseAll();
+  fileView->sortByColumn(0, Qt::AscendingOrder);
+  if (clearingSearch)
+  {
+    expandByPath(fileView, model, lastExpansionState);
+  }
 }
 
 bool MZipGui::fuzzyMatch(const QString &pattern, const QString &text)
@@ -496,155 +516,196 @@ void MZipGui::setupDragDrop()
 }
 
 // --- ZipTrieModel implementation ---
-ZipTrieModel::ZipTrieModel(const ZipTrie* trie, QObject* parent)
-    : QAbstractItemModel(parent), m_trie(trie) {}
+ZipTrieModel::ZipTrieModel(const ZipTrie *trie, QObject *parent) : QAbstractItemModel(parent), m_trie(trie) {}
 
-void ZipTrieModel::setTrie(const ZipTrie* trie) {
-    beginResetModel();
-    m_trie = trie;
-    endResetModel();
+void ZipTrieModel::setTrie(const ZipTrie *trie)
+{
+  beginResetModel();
+  m_trie = trie;
+  endResetModel();
 }
 
-QModelIndex ZipTrieModel::index(int row, int column, const QModelIndex& parent) const {
-    if (!m_trie || row < 0 || column < 0 || column >= columnCount(parent))
-        return QModelIndex();
-    const ZipTrieNode* parentNode = nodeFromIndex(parent);
-    if (!parentNode)
-        parentNode = &m_trie->root();
-    // Build a sorted vector: directories first, then files, both alphabetically
-    std::vector<std::pair<std::string, const ZipTrieNode*>> sortedChildren;
-    for (const auto& [name, childPtr] : parentNode->children) {
-        sortedChildren.emplace_back(name, childPtr.get());
+QModelIndex ZipTrieModel::index(int row, int column, const QModelIndex &parent) const
+{
+  if (!m_trie || row < 0 || column < 0 || column >= columnCount(parent))
+    return QModelIndex();
+  const ZipTrieNode *parentNode = nodeFromIndex(parent);
+  if (!parentNode)
+    parentNode = &m_trie->root();
+  // Build a sorted vector: directories first, then files, both alphabetically
+  std::vector<std::pair<std::string, const ZipTrieNode *>> sortedChildren;
+  for (const auto &[name, childPtr] : parentNode->children)
+  {
+    sortedChildren.emplace_back(name, childPtr.get());
+  }
+  std::sort(sortedChildren.begin(), sortedChildren.end(),
+            [](const auto &a, const auto &b)
+            {
+              bool aDir = !a.second->isFile();
+              bool bDir = !b.second->isFile();
+              if (aDir != bDir)
+                return aDir > bDir; // directories first
+              return a.first < b.first;
+            });
+  if (row >= static_cast<int>(sortedChildren.size()))
+    return QModelIndex();
+  return createIndex(row, column, (void *)sortedChildren[row].second);
+}
+
+QModelIndex ZipTrieModel::parent(const QModelIndex &child) const
+{
+  if (!child.isValid() || !m_trie)
+    return QModelIndex();
+  const ZipTrieNode *node = nodeFromIndex(child);
+  if (!node)
+    return QModelIndex();
+  // Find parent node and its row
+  std::function<const ZipTrieNode *(const ZipTrieNode *, const ZipTrieNode *, int &)> findParent =
+      [&](const ZipTrieNode *current, const ZipTrieNode *target, int &row) -> const ZipTrieNode *
+  {
+    int i = 0;
+    for (const auto &[name, childPtr] : current->children)
+    {
+      if (childPtr.get() == target)
+      {
+        row = i;
+        return current;
+      }
+      int subrow = 0;
+      const ZipTrieNode *found = findParent(childPtr.get(), target, subrow);
+      if (found)
+        return found;
+      ++i;
     }
-    std::sort(sortedChildren.begin(), sortedChildren.end(), [](const auto& a, const auto& b) {
-        bool aDir = !a.second->isFile();
-        bool bDir = !b.second->isFile();
-        if (aDir != bDir) return aDir > bDir; // directories first
-        return a.first < b.first;
-    });
-    if (row >= static_cast<int>(sortedChildren.size()))
-        return QModelIndex();
-    return createIndex(row, column, (void*)sortedChildren[row].second);
+    return nullptr;
+  };
+  int row = 0;
+  const ZipTrieNode *parentNode = findParent(&m_trie->root(), node, row);
+  if (!parentNode || parentNode == node)
+    return QModelIndex();
+  // Find parent's parent and row
+  if (parentNode == &m_trie->root())
+    return QModelIndex();
+  int prow = 0;
+  findParent(&m_trie->root(), parentNode, prow);
+  return createIndex(prow, 0, (void *)parentNode);
 }
 
-QModelIndex ZipTrieModel::parent(const QModelIndex& child) const {
-    if (!child.isValid() || !m_trie)
-        return QModelIndex();
-    const ZipTrieNode* node = nodeFromIndex(child);
-    if (!node)
-        return QModelIndex();
-    // Find parent node and its row
-    std::function<const ZipTrieNode*(const ZipTrieNode*, const ZipTrieNode*, int&)> findParent =
-        [&](const ZipTrieNode* current, const ZipTrieNode* target, int& row) -> const ZipTrieNode* {
-            int i = 0;
-            for (const auto& [name, childPtr] : current->children) {
-                if (childPtr.get() == target)
-                    { row = i; return current; }
-                int subrow = 0;
-                const ZipTrieNode* found = findParent(childPtr.get(), target, subrow);
-                if (found)
-                    return found;
-                ++i;
-            }
-            return nullptr;
-        };
-    int row = 0;
-    const ZipTrieNode* parentNode = findParent(&m_trie->root(), node, row);
-    if (!parentNode || parentNode == node)
-        return QModelIndex();
-    // Find parent's parent and row
-    if (parentNode == &m_trie->root())
-        return QModelIndex();
-    int prow = 0;
-    findParent(&m_trie->root(), parentNode, prow);
-    return createIndex(prow, 0, (void*)parentNode);
+int ZipTrieModel::rowCount(const QModelIndex &parent) const
+{
+  if (!m_trie)
+    return 0;
+  const ZipTrieNode *node = nodeFromIndex(parent);
+  if (!node)
+    node = &m_trie->root();
+  return static_cast<int>(node->children.size());
 }
 
-int ZipTrieModel::rowCount(const QModelIndex& parent) const {
-    if (!m_trie)
-        return 0;
-    const ZipTrieNode* node = nodeFromIndex(parent);
-    if (!node)
-        node = &m_trie->root();
-    return static_cast<int>(node->children.size());
+int ZipTrieModel::columnCount(const QModelIndex &) const
+{
+  return 5; // Name, Size, Compressed, Modified, CRC
 }
 
-int ZipTrieModel::columnCount(const QModelIndex&) const {
-    return 5; // Name, Size, Compressed, Modified, CRC
-}
-
-QVariant ZipTrieModel::data(const QModelIndex& index, int role) const {
-    if (!index.isValid() || !m_trie)
-        return QVariant();
-    const ZipTrieNode* node = nodeFromIndex(index);
-    if (!node)
-        return QVariant();
-    // Find the name for this node, using sorted order
-    const ZipTrieNode* parentNode = nodeFromIndex(index.parent());
-    if (!parentNode)
-        parentNode = &m_trie->root();
-    std::vector<std::pair<std::string, const ZipTrieNode*>> sortedChildren;
-    for (const auto& [name, childPtr] : parentNode->children) {
-        sortedChildren.emplace_back(name, childPtr.get());
-    }
-    std::sort(sortedChildren.begin(), sortedChildren.end(), [](const auto& a, const auto& b) {
-        bool aDir = !a.second->isFile();
-        bool bDir = !b.second->isFile();
-        if (aDir != bDir) return aDir > bDir;
-        return a.first < b.first;
-    });
-    int row = index.row();
-    if (row >= static_cast<int>(sortedChildren.size()))
-        return QVariant();
-    const std::string& name = sortedChildren[row].first;
-    const ZipTrieNode* sortedNode = sortedChildren[row].second;
-    if (role == Qt::DisplayRole) {
-        if (index.column() == 0) {
-            return QString::fromStdString(name);
-        } else if (index.column() == 1) {
-            if (sortedNode->isFile())
-                return humanReadableSize(sortedNode->fileData->UncompressedSize);
-            return QVariant();
-        } else if (index.column() == 2) {
-            if (sortedNode->isFile())
-                return humanReadableSize(sortedNode->fileData->CompressedSize);
-            return QVariant();
-        } else if (index.column() == 3) {
-            if (sortedNode->isFile())
-                return QString::fromStdString(sortedNode->fileData->LastModified.toString());
-            return QVariant();
-        } else if (index.column() == 4) {
-            if (sortedNode->isFile())
-                return QString::number(sortedNode->fileData->CRC32, 16).toUpper();
-            return QVariant();
-        }
-    } else if (role == Qt::DecorationRole && index.column() == 0) {
-        if (sortedNode->isFile())
-            return QApplication::style()->standardIcon(QStyle::SP_FileIcon);
-        else
-            return QApplication::style()->standardIcon(QStyle::SP_DirIcon);
-    } else if (role == Qt::UserRole) {
-        return sortedNode->isFile() ? 1 : 0;
-    }
+QVariant ZipTrieModel::data(const QModelIndex &index, int role) const
+{
+  if (!index.isValid() || !m_trie)
     return QVariant();
-}
-
-QVariant ZipTrieModel::headerData(int section, Qt::Orientation orientation, int role) const {
-    if (orientation == Qt::Horizontal && role == Qt::DisplayRole) {
-        switch (section) {
-            case 0: return "Name";
-            case 1: return "Size";
-            case 2: return "Compressed";
-            case 3: return "Modified";
-            case 4: return "CRC";
-        }
-    }
+  const ZipTrieNode *node = nodeFromIndex(index);
+  if (!node)
     return QVariant();
+  // Find the name for this node, using sorted order
+  const ZipTrieNode *parentNode = nodeFromIndex(index.parent());
+  if (!parentNode)
+    parentNode = &m_trie->root();
+  std::vector<std::pair<std::string, const ZipTrieNode *>> sortedChildren;
+  for (const auto &[name, childPtr] : parentNode->children)
+  {
+    sortedChildren.emplace_back(name, childPtr.get());
+  }
+  std::sort(sortedChildren.begin(), sortedChildren.end(),
+            [](const auto &a, const auto &b)
+            {
+              bool aDir = !a.second->isFile();
+              bool bDir = !b.second->isFile();
+              if (aDir != bDir)
+                return aDir > bDir;
+              return a.first < b.first;
+            });
+  int row = index.row();
+  if (row >= static_cast<int>(sortedChildren.size()))
+    return QVariant();
+  const std::string &name = sortedChildren[row].first;
+  const ZipTrieNode *sortedNode = sortedChildren[row].second;
+  if (role == Qt::DisplayRole)
+  {
+    if (index.column() == 0)
+    {
+      return QString::fromStdString(name);
+    }
+    else if (index.column() == 1)
+    {
+      if (sortedNode->isFile())
+        return humanReadableSize(sortedNode->fileData->UncompressedSize);
+      return QVariant();
+    }
+    else if (index.column() == 2)
+    {
+      if (sortedNode->isFile())
+        return humanReadableSize(sortedNode->fileData->CompressedSize);
+      return QVariant();
+    }
+    else if (index.column() == 3)
+    {
+      if (sortedNode->isFile())
+        return QString::fromStdString(sortedNode->fileData->LastModified.toString());
+      return QVariant();
+    }
+    else if (index.column() == 4)
+    {
+      if (sortedNode->isFile())
+        return QString::number(sortedNode->fileData->CRC32, 16).toUpper();
+      return QVariant();
+    }
+  }
+  else if (role == Qt::DecorationRole && index.column() == 0)
+  {
+    if (sortedNode->isFile())
+      return QApplication::style()->standardIcon(QStyle::SP_FileIcon);
+    else
+      return QApplication::style()->standardIcon(QStyle::SP_DirIcon);
+  }
+  else if (role == Qt::UserRole)
+  {
+    return sortedNode->isFile() ? 1 : 0;
+  }
+  return QVariant();
 }
 
-const ZipTrieNode* ZipTrieModel::nodeFromIndex(const QModelIndex& index) const {
-    if (!index.isValid())
-        return nullptr;
-    return reinterpret_cast<const ZipTrieNode*>(index.internalPointer());
+QVariant ZipTrieModel::headerData(int section, Qt::Orientation orientation, int role) const
+{
+  if (orientation == Qt::Horizontal && role == Qt::DisplayRole)
+  {
+    switch (section)
+    {
+    case 0:
+      return "Name";
+    case 1:
+      return "Size";
+    case 2:
+      return "Compressed";
+    case 3:
+      return "Modified";
+    case 4:
+      return "CRC";
+    }
+  }
+  return QVariant();
+}
+
+const ZipTrieNode *ZipTrieModel::nodeFromIndex(const QModelIndex &index) const
+{
+  if (!index.isValid())
+    return nullptr;
+  return reinterpret_cast<const ZipTrieNode *>(index.internalPointer());
 }
 // --- End ZipTrieModel implementation ---

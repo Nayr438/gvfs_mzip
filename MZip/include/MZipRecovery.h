@@ -9,7 +9,7 @@ class MZipRecovery : public MZip
     public:
 
         MZipRecovery(std::string_view fileName) : MZip(fileName) {}
-        bool openArchiveForced();   
+        bool openArchiveForced() override;   
         bool findData(std::span<char> inData, zip::CentralDirectoryFileHeader &header, std::string &fileName);
 
 
