@@ -1,9 +1,9 @@
 #include "MZip.h"
-#include "MZFile.h"
 #include "MZipConstants.h"
 #include "ZipStructs.h"
-#include "ZipTrie.h"
+#include "ZipTree.h"
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <zlib.h>
 
@@ -19,23 +19,35 @@ MZip::MZip(std::string_view fileName) : archivePath(fileName) {}
 
 bool MZip::openArchive()
 {
-  archiveFile = std::make_unique<MZFile>(archivePath);
+  archiveFile = std::make_unique<std::fstream>(archivePath, std::ios::in | std::ios::binary);
 
   if (!archiveFile->is_open())
     return false;
 
-  version(archiveFile->getSignature());
+  std::uint32_t signature = 0;
+  archiveFile->read(reinterpret_cast<char *>(&signature), sizeof(signature));
+
+  if (signature == mzip::v1::LocalFileHeaderSignature || signature == mzip::v1::LocalFileHeaderSignature2)
+    _version = mzip::Version::Mrs1;
+  else
+  {
+    ConvertChar({reinterpret_cast<char *>(&signature), sizeof(signature)}, true);
+    if (signature == mzip::v2::LocalFileHeaderSignature)
+      _version = mzip::Version::Mrs2;
+    else
+      return false;
+  }
 
   auto dirEnd = getEndRecord();
-  archiveFile->seek(dirEnd.CentralDirectoryOffset, std::ios::beg);
+  archiveFile->seekg(dirEnd.CentralDirectoryOffset, std::ios::beg);
 
-  if (dirEnd.Signature != mzip::CentralDirectoryEndSignatureLegacy && dirEnd.Signature != mzip::CentralDirectoryEndSignature)
+  if (!checkSignature(dirEnd))
     return false;
 
   return buildArchiveTree(dirEnd);
 }
 
-bool MZip::openArchiveForced() { return openArchive(); }
+bool MZip::openArchiveForced() { return false; }
 
 //------------------------------------------------------------------------------
 // File operations
@@ -43,11 +55,11 @@ bool MZip::openArchiveForced() { return openArchive(); }
 
 std::shared_ptr<char[]> MZip::GetFile(std::string_view fileName)
 {
-  const auto *node = ArchiveTree->lookup(fileName);
-  if (!node || !node->isFile())
+  const auto *node = ArchiveTree->findFileNode(std::string(fileName));
+  if (!node)
     return nullptr;
 
-  archiveFile->seek(node->fileData->FileHeaderOffset, std::ios::beg);
+  archiveFile->seekg(node->fileHeader.FileHeaderOffset, std::ios::beg);
 
   if (_version != mzip::Version::ForcedRecovery)
   {
@@ -57,40 +69,39 @@ std::shared_ptr<char[]> MZip::GetFile(std::string_view fileName)
     if (!checkSignature(header))
       return nullptr;
 
-    archiveFile->seek(header.FileNameLength + header.ExtraFieldLength, std::ios::cur);
+    archiveFile->seekg(header.FileNameLength + header.ExtraFieldLength, std::ios::cur);
   }
 
-  auto uncompressedData = std::make_shared<char[]>(node->fileData->UncompressedSize);
+  auto uncompressedData = std::make_shared<char[]>(node->fileHeader.UncompressedSize);
 
-  if (node->fileData->CompressedSize == node->fileData->UncompressedSize)
+  if (node->fileHeader.CompressedSize == node->fileHeader.UncompressedSize)
   {
-    archiveFile->read(uncompressedData.get(), node->fileData->UncompressedSize);
+    archiveFile->read(uncompressedData.get(), node->fileHeader.UncompressedSize);
     return uncompressedData;
   }
 
-  auto compressedData = std::make_unique<char[]>(node->fileData->CompressedSize);
+  auto compressedData = std::make_unique<char[]>(node->fileHeader.CompressedSize);
 
-  archiveFile->read(compressedData.get(), node->fileData->CompressedSize);
+  archiveFile->read(compressedData.get(), node->fileHeader.CompressedSize);
 
-  // auto crc =
-  auto crc = processData(std::span{compressedData.get(), node->fileData->CompressedSize},
-                         std::span{uncompressedData.get(), node->fileData->UncompressedSize}, false);
+  auto crc = processData(std::span{compressedData.get(), node->fileHeader.CompressedSize},
+                         std::span{uncompressedData.get(), node->fileHeader.UncompressedSize}, false);
 
-  if (crc == node->fileData->CRC32)
+  if (crc == node->fileHeader.CRC32)
     return uncompressedData;
 
-  std::cout << "CRC32 mismatch!\n";
+  std::cout << std::format("File: {} CRC32 mismatch! Expected: {} Found: {}\n", fileName, node->fileHeader.CRC32, crc);
   return nullptr;
 }
 
 void MZip::extractFile(std::string_view fileName, const std::filesystem::path &extractPath)
 {
+  const auto *node = ArchiveTree->findFileNode(std::string(fileName));
+  if (!node)
+    return;
+
   auto file = GetFile(fileName);
   if (!file)
-    return; // More idiomatic nullptr check
-
-  const auto *node = ArchiveTree->lookup(fileName);
-  if (!node || !node->isFile())
     return;
 
   auto destPath = extractPath;
@@ -100,63 +111,64 @@ void MZip::extractFile(std::string_view fileName, const std::filesystem::path &e
   }
 
   if (std::filesystem::exists(destPath))
-    return;
+    return; // File already exists, skip extraction
 
   std::filesystem::create_directories(destPath.parent_path());
 
   std::ofstream outFile(destPath, std::ios::binary);
-  outFile.write(file.get(), node->fileData->UncompressedSize);
+  outFile.write(file.get(), node->fileHeader.UncompressedSize);
 }
 
-void MZip::extractFiles(const std::vector<std::string_view> &files, const std::filesystem::path &extractPath)
+void MZip::extractFiles(const std::vector<std::string> &files, const std::filesystem::path &extractPath)
 {
-  // Collect all valid files to extract
-  std::vector<std::pair<std::string_view, std::filesystem::path>> extractTasks;
+  // Extract files directly, preserving directory structure
   for (const auto &file : files)
   {
-    const auto *node = ArchiveTree->lookup(file);
-    if (node && node->isFile())
+    const auto *node = ArchiveTree->findFileNode(file);
+    if (node)
     {
-      auto destPath = extractPath / std::filesystem::path(file).filename();
-      extractTasks.emplace_back(file, destPath);
+      auto destPath = extractPath / std::filesystem::path(file);
+      extractFile(file, destPath);
     }
-  }
-
-  processExtractionTasks(extractTasks);
-}
-
-void MZip::assignExtractTasks(TaskVector &extractTasks, const std::filesystem::path &filePath,
-                              const std::filesystem::path &basePath)
-{
-  const auto *node = ArchiveTree->lookup(filePath);
-  if (!node)
-    return;
-
-  if (node->isFile())
-  {
-    extractTasks.emplace_back(filePath.string(), basePath / std::filesystem::path(filePath));
-  }
-  else
-  {
-    std::filesystem::create_directories(basePath / filePath);
   }
 }
 
 void MZip::extractDirectory(std::string_view dirPath, const std::filesystem::path &extractPath)
 {
-  const auto *node = ArchiveTree->lookup(dirPath);
-  if (!node || node->isFile())
+  const auto *node = ArchiveTree->lookup(std::string(dirPath));
+  if (!node || !node->isDirectory)
     return;
 
   auto basePath = extractPath;
   std::filesystem::create_directories(basePath);
 
-  TaskVector extractTasks;
+  // Recursive function to extract files directly as we traverse
+  std::function<void(const std::string &)> extractRecursive = [&](const std::string &currentPath)
+  {
+    const ZipNode *currentNode = ArchiveTree->lookup(currentPath);
+    if (!currentNode)
+      return;
 
-  ArchiveTree->traverse(dirPath, [&](const std::filesystem::path &path, const ZipTrieNode &)
-                        { assignExtractTasks(extractTasks, path, basePath); });
+    if (!currentNode->isDirectory)
+    {
+      // Extract file directly
+      auto destPath = basePath / std::filesystem::path(currentPath);
+      extractFile(currentPath, destPath);
+    }
+    else
+    {
+      // Create directory and recurse into children
+      std::filesystem::create_directories(basePath / currentPath);
+      auto children = ArchiveTree->getChildren(currentPath);
+      for (const auto &child : children)
+      {
+        std::string childPath = currentPath.empty() ? child : currentPath + "/" + child;
+        extractRecursive(childPath);
+      }
+    }
+  };
 
-  processExtractionTasks(extractTasks);
+  extractRecursive(std::string(dirPath));
 }
 
 void MZip::extractArchive(std::string_view path)
@@ -166,87 +178,13 @@ void MZip::extractArchive(std::string_view path)
 }
 
 //------------------------------------------------------------------------------
-// Archive creation and modification
-//------------------------------------------------------------------------------
-
-void MZip::createArchive(const std::filesystem::path &path, int version)
-{
-  std::ofstream archive(path, std::ios::binary);
-  if (!archive)
-    return;
-
-  mzip::Version ver = static_cast<mzip::Version>(version);
-  uint32_t headerOffset = 0;
-  std::vector<zip::CentralDirectoryFileHeader> centralHeaders;
-
-  ArchiveTree->traverse("",
-                        [&](const std::filesystem::path &path, const ZipTrieNode &node)
-                        {
-                          if (!node.isFile())
-                            return;
-
-                          auto central = makeCentralHeader(node.fileData->LastModified, node.fileData->CRC32,
-                                                           node.fileData->CompressedSize, node.fileData->UncompressedSize,
-                                                           path.string().length(), headerOffset);
-
-                          auto local = makeLocalHeader(central);
-                          if (ver == mzip::Version::Mrs2)
-                            ConvertChar(std::span{reinterpret_cast<char *>(&local), sizeof(local)}, true);
-
-                          archive.write(reinterpret_cast<char *>(&local), sizeof(local));
-                          archive.write(path.string().c_str(), path.string().length());
-
-                          headerOffset = static_cast<uint32_t>(archive.tellp());
-                          centralHeaders.push_back(central);
-                        });
-
-  uint32_t dirOffset = static_cast<uint32_t>(archive.tellp());
-  for (auto &header : centralHeaders)
-  {
-    if (ver == mzip::Version::Mrs2)
-    {
-      ConvertChar(std::span{reinterpret_cast<char *>(&header), sizeof(header)}, true);
-    }
-    archive.write(reinterpret_cast<char *>(&header), sizeof(header));
-  }
-
-  uint32_t dirSize = static_cast<uint32_t>(archive.tellp()) - dirOffset;
-  auto end = makeCentralEnd(centralHeaders.size(), dirSize, dirOffset);
-
-  if (ver == mzip::Version::Mrs2)
-  {
-    ConvertChar(std::span{reinterpret_cast<char *>(&end), sizeof(end)}, true);
-  }
-
-  archive.write(reinterpret_cast<char *>(&end), sizeof(end));
-}
-
-bool MZip::createEmpty(const std::filesystem::path &path, mzip::Version version)
-{
-  std::ofstream archive(path, std::ios::binary);
-  if (!archive)
-    return false;
-
-  // Write empty central directory end
-  auto end = makeCentralEnd(0, 0, 0);
-  if (version == mzip::Version::Mrs2)
-  {
-    ConvertChar(std::span{reinterpret_cast<char *>(&end), sizeof(end)}, true);
-  }
-  archive.write(reinterpret_cast<char *>(&end), sizeof(end));
-
-  archivePath = path;
-  return true;
-}
-
-//------------------------------------------------------------------------------
 // ZIP header operations
 //------------------------------------------------------------------------------
 
 zip::EndOfCentralDirectoryRecord MZip::getEndRecord()
 {
   zip::EndOfCentralDirectoryRecord dirEnd{};
-  archiveFile->seek(-sizeof(dirEnd), std::ios::end);
+  archiveFile->seekg(-sizeof(dirEnd), std::ios::end);
   fetchHeaderData(&dirEnd);
   return dirEnd;
 }
@@ -268,25 +206,41 @@ std::string MZip::getNextHeaderString(std::size_t length)
 template <typename T> bool MZip::checkSignature(T &_struct)
 {
   if constexpr (std::is_same_v<T, zip::LocalFileHeader>)
-    return _struct.Signature == mzip::LocalFileHeaderSignature;
+  {
+    if (_version == mzip::Version::Mrs1)
+      return _struct.Signature == mzip::v1::LocalFileHeaderSignature ||
+             _struct.Signature == mzip::v1::LocalFileHeaderSignature2;
+    else if (_version == mzip::Version::Mrs2)
+      return _struct.Signature == mzip::v2::LocalFileHeaderSignature;
+    else
+      return false;
+  }
   else if constexpr (std::is_same_v<T, zip::CentralDirectoryFileHeader>)
-    return _struct.Signature == mzip::CentralDirectorySignature;
+  {
+    if (_version == mzip::Version::Mrs1)
+      return _struct.Signature == mzip::v1::CentralDirectorySignature;
+    else if (_version == mzip::Version::Mrs2)
+      return _struct.Signature == mzip::v2::CentralDirectorySignature;
+    else
+      return false;
+  }
   else if constexpr (std::is_same_v<T, zip::EndOfCentralDirectoryRecord>)
-    return _struct.Signature == zip::Signature || _struct.Signature == mzip::CentralDirectorySignature;
+  {
+    if (_version == mzip::Version::Mrs1)
+      return _struct.Signature == mzip::v1::CentralDirectoryEndSignature ||
+             _struct.Signature == mzip::v1::CentralDirectoryEndSignature2;
+    else if (_version == mzip::Version::Mrs2)
+      return _struct.Signature == mzip::v2::CentralDirectoryEndSignature ||
+             _struct.Signature == mzip::v2::CentralDirectoryEndSignature2;
+    else
+      return false;
+  }
   return false;
-}
-
-mzip::Version MZip::version(std::optional<std::uint32_t> signature)
-{
-  if (signature.has_value())
-    _version = (signature == mzip::LocalFileHeaderSignature) ? mzip::Version::Mrs1 : mzip::Version::Mrs2;
-
-  return _version;
 }
 
 bool MZip::buildArchiveTree(zip::EndOfCentralDirectoryRecord dirEnd)
 {
-  ArchiveTree = std::make_shared<ZipTrie>();
+  ArchiveTree = std::make_shared<ZipTree>();
 
   for (uint16_t i = 0; i < dirEnd.DirectoryCountOnDisk; ++i)
   {
@@ -297,10 +251,10 @@ bool MZip::buildArchiveTree(zip::EndOfCentralDirectoryRecord dirEnd)
 
     auto FileName = getNextHeaderString(dirHeader.FileNameLength);
 
-    // Insert file with its path and data
-    ArchiveTree->insert(FileName, toNodeFileHeader(dirHeader));
+    // Insert file with its ZIP header directly
+    ArchiveTree->insert(FileName, dirHeader);
 
-    archiveFile->seek(dirHeader.ExtraFieldLength + dirHeader.CommentLength, std::ios::cur);
+    archiveFile->seekg(dirHeader.ExtraFieldLength + dirHeader.CommentLength, std::ios::cur);
   }
 
   return true;
@@ -327,7 +281,7 @@ zip::LocalFileHeader MZip::makeLocalHeader(const zip::CentralDirectoryFileHeader
 zip::CentralDirectoryFileHeader MZip::makeCentralHeader(DOSDateTime modified, uint32_t crc, uint32_t compSize,
                                                         uint32_t uncompSize, uint16_t nameLen, uint32_t offset)
 {
-  return {.Signature = mzip::CentralDirectorySignature,
+  return {.Signature = mzip::v2::CentralDirectorySignature,
           .Version = 25,
           .MinVersion = 20,
           .BitFlag = 0,
@@ -347,7 +301,7 @@ zip::CentralDirectoryFileHeader MZip::makeCentralHeader(DOSDateTime modified, ui
 
 zip::EndOfCentralDirectoryRecord MZip::makeCentralEnd(uint16_t fileCount, uint32_t dirSize, uint32_t dirOffset)
 {
-  return {.Signature = mzip::CentralDirectoryEndSignature,
+  return {.Signature = mzip::v2::CentralDirectoryEndSignature,
           .DiskNumber = 0,
           .DiskStartNumber = 0,
           .DirectoryCountOnDisk = fileCount,
@@ -375,7 +329,7 @@ template <typename T> void MZip::fetchHeaderData(T *data, std::optional<std::siz
 {
   const auto dataSize = size.value_or(sizeof(*data));
 
-  archiveFile->read(data, dataSize);
+  archiveFile->read(reinterpret_cast<char *>(data), dataSize);
   if (_version == mzip::Version::Mrs2)
   {
     ConvertChar({reinterpret_cast<char *>(data), dataSize}, true);
@@ -400,26 +354,11 @@ uint32_t MZip::processData(std::span<char> inData, std::span<char> outData, bool
   stream.next_out = reinterpret_cast<Bytef *>(outData.data());
   stream.avail_out = outData.size();
 
-  if (compress ? deflate(stream) : inflate(stream) == Z_STREAM_END)
+  int result = compress ? deflate(stream) : inflate(stream);
+  if (result == Z_STREAM_END)
     return crc32(0L, reinterpret_cast<Bytef *>(outData.data()), outData.size());
 
   return 0;
-}
-void MZip::processExtractionTasks(const std::vector<std::pair<std::string_view, std::filesystem::path>> &tasks)
-{
-  // Process files in parallel
-  std::vector<std::future<void>> futures;
-  for (const auto &[name, destPath] : tasks)
-  {
-    futures.push_back(
-        std::async(std::launch::async, [this, name = name, destPath = destPath]() { extractFile(name, destPath); }));
-  }
-
-  // Wait for all extractions to complete
-  for (auto &future : futures)
-  {
-    future.wait();
-  }
 }
 
 //------------------------------------------------------------------------------

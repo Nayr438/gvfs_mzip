@@ -3,20 +3,16 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <future>
 #include <map>
 #include <memory>
-#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
-#include <variant>
 #include <vector>
 
-#include "MZFile.h"
 #include "MZipConstants.h"
 #include "ZipStructs.h"
-#include "ZipTrie.h"
+#include "ZipTree.h"
 #include "zlib.h"
 
 class MZipRecovery;
@@ -35,39 +31,26 @@ public:
   // File operations
   std::shared_ptr<char[]> GetFile(std::string_view fileName);
   void extractFile(std::string_view fileName, const std::filesystem::path &extractPath);
-  void extractFiles(const std::vector<std::string_view> &files, const std::filesystem::path &extractPath);
+  void extractFiles(const std::vector<std::string> &files, const std::filesystem::path &extractPath);
   void extractDirectory(std::string_view dirPath, const std::filesystem::path &extractPath);
   void extractArchive(std::string_view path);
 
-  // Archive creation and modification
-  void createArchive(const std::filesystem::path &path, int version);
-  bool createEmpty(const std::filesystem::path &path, mzip::Version version);
-  bool addFile(const std::filesystem::path &filePath, std::string_view archivePath);
-  bool addDirectory(const std::filesystem::path &dirPath, std::string_view archivePath = "");
-  bool removeFile(std::string_view fileName);
-
   // Accessors
-  const std::shared_ptr<ZipTrie> &getTree() const noexcept { return ArchiveTree; }
+  const std::shared_ptr<ZipTree> &getTree() const noexcept { return ArchiveTree; }
   const std::filesystem::path &getPath() const noexcept { return archivePath; }
 
 private:
   // Core data members
-  std::shared_ptr<ZipTrie> ArchiveTree;
+  std::shared_ptr<ZipTree> ArchiveTree;
   std::filesystem::path archivePath;
   mzip::Version _version;
-  std::unique_ptr<MZFile> archiveFile;
-  bool recovery = false;
-
-  using TaskVector = std::vector<std::pair<std::string_view, std::filesystem::path>>;
-
-  void assignExtractTasks(TaskVector &extractTasks, const std::filesystem::path &filePath, const std::filesystem::path &basePath);
+  std::unique_ptr<std::fstream> archiveFile;
 
   // ZIP header operations
   inline zip::EndOfCentralDirectoryRecord getEndRecord();
   inline zip::CentralDirectoryFileHeader getCentralHeader();
   inline std::string getNextHeaderString(std::size_t length);
   template <typename T> inline bool checkSignature(T &_struct);
-  inline mzip::Version version(std::optional<std::uint32_t> signature);
   inline bool buildArchiveTree(zip::EndOfCentralDirectoryRecord dirEnd);
 
   // ZIP structure helpers
@@ -82,9 +65,7 @@ private:
   uint32_t processData(std::span<char> inData, std::span<char> outData, bool compress);
   void ConvertChar(std::span<char> data, bool recover);
 
-  void processExtractionTasks(const std::vector<std::pair<std::string_view, std::filesystem::path>> &tasks);
-
-  // File signature mapping
+  // File signature mapping. This is technically not the way we should handle this, but it's a quick and dirty solution.
   const std::map<std::uint32_t, std::string_view> signatureMap = {{0x20000, ".tga"},
                                                                   {0x107f060, ".elu"},
                                                                   {0x235849298, ".rs.bsp"},

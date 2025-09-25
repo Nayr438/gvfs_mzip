@@ -5,29 +5,46 @@
 #include <QAction>
 #include <memory>
 #include <string>
-#include <vector>
 #include <filesystem>
 #include "MZip.h"
-#include "MZipRecovery.h"
 #include <QAbstractItemModel>
 
-// Custom model for ZipTrie
-class ZipTrieModel : public QAbstractItemModel {
+// Custom model for ZipTree
+class ZipTreeModel : public QAbstractItemModel {
     Q_OBJECT
 public:
-    explicit ZipTrieModel(const ZipTrie* trie, QObject* parent = nullptr);
+    explicit ZipTreeModel(const ZipTree* tree, QObject* parent = nullptr);
     QModelIndex index(int row, int column, const QModelIndex& parent) const override;
     QModelIndex parent(const QModelIndex& child) const override;
     int rowCount(const QModelIndex& parent) const override;
     int columnCount(const QModelIndex& parent) const override;
     QVariant data(const QModelIndex& index, int role) const override;
     QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
-    // For updating the model when the trie changes
-    void setTrie(const ZipTrie* trie);
-    // Helper for mapping QModelIndex to ZipTrieNode
-    const ZipTrieNode* nodeFromIndex(const QModelIndex& index) const;
+    bool hasChildren(const QModelIndex& parent) const override;
+    Qt::ItemFlags flags(const QModelIndex& index) const override;
+    // For updating the model when the tree changes
+    void setTree(const ZipTree* tree);
+    // Helper for mapping QModelIndex to ZipNode
+    const ZipNode* nodeFromIndex(const QModelIndex& index) const;
 private:
-    const ZipTrie* m_trie;
+    const ZipTree* m_tree;
+    
+    // Pre-loaded data structures for performance
+    struct NodeData {
+        QString name;
+        QString size;
+        QString compressedSize;
+        QString date;
+        QString crc;
+        bool isDirectory;
+        const ZipNode* node;
+    };
+    
+    mutable std::unordered_map<const ZipNode*, std::vector<NodeData>> nodeDataCache;
+    mutable std::unordered_map<const ZipNode*, const ZipNode*> parentCache;
+    
+    void preloadData();
+    std::vector<NodeData> getSortedChildrenData(const ZipNode* node) const;
 };
 
 class MZipGui : public QMainWindow {
@@ -42,9 +59,9 @@ protected:
 
 private:
     QTreeView* fileView;
-    ZipTrieModel* model;
+    ZipTreeModel* model;
     std::unique_ptr<MZip> currentArchive;
-    std::unique_ptr<ZipTrie> filteredTrie; // for search filtering
+    std::unique_ptr<ZipTree> filteredTree; // for search filtering
     QLineEdit* searchBox;
     QAction* findAction;
 
@@ -56,8 +73,8 @@ private:
     void setupSearchBox();
     void setupDragDrop();
     QMimeData* createMimeData(const QModelIndexList& indexes) const;
-    // Added helper for trie access
-    const ZipTrieNode* nodeFromIndex(const QModelIndex& index) const;
+    // Added helper for tree access
+    const ZipNode* nodeFromIndex(const QModelIndex& index) const;
 
 private slots:
     void openArchive();

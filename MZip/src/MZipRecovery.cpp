@@ -13,20 +13,22 @@ bool MZipRecovery::openArchiveForced()
             << "Files will not have names, some files may be missing, and some data may be invalid.\n"
             << "This does not guarantee any valid data will be found.\n";
 
-  archiveFile = std::make_unique<MZFile>(archivePath);
+  archiveFile = std::make_unique<std::fstream>(archivePath, std::ios::in | std::ios::binary);
   if (!archiveFile->is_open())
     return false;
 
-  // Get initial signature and file size
-  std::uint32_t signature = archiveFile->getSignature();
+  // Get first LocalFileHeader signature then scan for other instances
+  std::uint32_t signature = 0;
+  archiveFile->seekg(0);
+  archiveFile->read(reinterpret_cast<char*>(&signature), sizeof(signature));
 
   const auto fileSize = std::filesystem::file_size(archivePath) - sizeof(zip::EndOfCentralDirectoryRecord);
-  if (fileSize == 0)
+  if (fileSize <= 0)
     return false;
 
   _version = mzip::Version::ForcedRecovery;
-  ArchiveTree = std::make_shared<ZipTrie>();
-  archiveFile->seek(0);
+  ArchiveTree = std::make_shared<ZipTree>();
+  archiveFile->seekg(0);
 
   // Scan file for matching signatures
   std::vector<std::streampos> signaturePositions;
@@ -55,10 +57,10 @@ bool MZipRecovery::openArchiveForced()
 
     // Back up to catch split signatures
     if (bytesRead >= 3)
-      archiveFile->seek(-3, std::ios::cur);
+      archiveFile->seekg(-3, std::ios::cur);
   }
 
-  std::cout << "Found " << signaturePositions.size() << " signatures\n";
+  std::cout << "Found " << signaturePositions.size() << " potential file signatures\n";
 
   // Process found signatures
   for (size_t pos = 0; pos < signaturePositions.size(); pos++)
@@ -68,11 +70,11 @@ bool MZipRecovery::openArchiveForced()
         (pos < signaturePositions.size() - 1) ? signaturePositions[pos + 1] : static_cast<std::streampos>(fileSize);
     const auto size = static_cast<size_t>(nextPos - currentPos);
 
-    std::cout << "Searching for data at position " << currentPos << " for file at position " << pos << "\n";
+    std::cout << "Processing signature at position " << currentPos << " (file " << pos + 1 << "/" << signaturePositions.size() << ")\n";
 
     // Skip LocalFileHeader when reading data
     archiveFile->clear();
-    archiveFile->seek(currentPos + static_cast<std::streamoff>(sizeof(zip::LocalFileHeader)), std::ios::beg);
+    archiveFile->seekg(currentPos + static_cast<std::streamoff>(sizeof(zip::LocalFileHeader)), std::ios::beg);
     if (!archiveFile->good())
       continue;
 
@@ -80,7 +82,7 @@ bool MZipRecovery::openArchiveForced()
     archiveFile->read(compressedData.get(), size);
 
     zip::CentralDirectoryFileHeader dirHeader{};
-    dirHeader.Signature = mzip::CentralDirectorySignature;
+    dirHeader.Signature = mzip::v2::CentralDirectorySignature;
     dirHeader.CompressionMethod = 8;
     dirHeader.LastModified = DOSDateTime(std::filesystem::last_write_time(archivePath));
     dirHeader.CompressedSize = static_cast<uint32_t>(size);
@@ -91,7 +93,7 @@ bool MZipRecovery::openArchiveForced()
     std::string fileName = "file_" + std::to_string(pos);
     if (findData(std::span{compressedData.get(), size}, dirHeader, fileName))
     {
-      ArchiveTree->insert(std::filesystem::path(fileName), toNodeFileHeader(dirHeader));
+      ArchiveTree->insert(fileName, dirHeader);
     }
   }
 
@@ -151,6 +153,6 @@ bool MZipRecovery::findData(std::span<char> inData, zip::CentralDirectoryFileHea
     }
   }
 
-  std::cout << "No data found!\n";
+  std::cout << "No valid data found in this segment.\n";
   return false;
 }
