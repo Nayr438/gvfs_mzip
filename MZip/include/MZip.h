@@ -45,15 +45,19 @@ private:
   std::filesystem::path archivePath;
   mzip::Version _version;
   std::unique_ptr<std::fstream> archiveFile;
+  std::uint32_t MGSeed = 0; 
 
   // ZIP header operations
   inline zip::EndOfCentralDirectoryRecord getEndRecord();
   inline zip::CentralDirectoryFileHeader getCentralHeader();
+  inline zip::LocalFileHeader getLocalFileHeader();
   inline std::string getNextHeaderString(std::size_t length);
   template <typename T> inline bool checkSignature(T &_struct);
   inline bool buildArchiveTree(zip::EndOfCentralDirectoryRecord dirEnd);
+  inline bool MGbuildArchiveTree(zip::EndOfCentralDirectoryRecord dirEnd);
 
   // ZIP structure helpers
+  zip::CentralDirectoryFileHeader toCentralDirectory(const zip::LocalFileHeader &local, std::uint32_t headerOffset);
   zip::LocalFileHeader makeLocalHeader(const zip::CentralDirectoryFileHeader &central);
   zip::CentralDirectoryFileHeader makeCentralHeader(DOSDateTime modified, uint32_t crc, uint32_t compSize,
                                                     uint32_t uncompSize, uint16_t nameLen, uint32_t offset);
@@ -64,6 +68,11 @@ private:
   template <typename T> void writeHeaderData(std::ofstream &file, T *data, std::optional<std::size_t> size = std::nullopt);
   uint32_t processData(std::span<char> inData, std::span<char> outData, bool compress);
   void ConvertChar(std::span<char> data, bool recover);
+
+  //Masangsoft
+  //These are split in the binary so I am going to leave them split here.
+  std::int32_t MG_GenerateSeedPart(std::int32_t input);
+  void MG_RecoveryChar(std::span<char> data, uint32_t seed);
 
   // File signature mapping. This is technically not the way we should handle this, but it's a quick and dirty solution.
   const std::map<std::uint32_t, std::string_view> signatureMap = {{0x20000, ".tga"},

@@ -25,6 +25,7 @@ bool MZip::openArchive()
     return false;
 
   std::uint32_t signature = 0;
+
   archiveFile->read(reinterpret_cast<char *>(&signature), sizeof(signature));
 
   if (signature == mzip::v1::LocalFileHeaderSignature || signature == mzip::v1::LocalFileHeaderSignature2)
@@ -35,16 +36,32 @@ bool MZip::openArchive()
     if (signature == mzip::v2::LocalFileHeaderSignature)
       _version = mzip::Version::Mrs2;
     else
-      return false;
+    {
+      // Right now only one seed is used, while I could just staticly set it, I am going to leave it like this for now.
+      MGSeed = MG_GenerateSeedPart(0x7693d7fb);
+      MG_RecoveryChar({reinterpret_cast<char *>(&signature), sizeof(signature)}, MGSeed);
+      if (signature == mzip::v3::LocalFileHeaderSignature)
+        _version = mzip::Version::Mrs3;
+      else
+        return false;
+    }
   }
 
   auto dirEnd = getEndRecord();
+
   archiveFile->seekg(dirEnd.CentralDirectoryOffset, std::ios::beg);
 
   if (!checkSignature(dirEnd))
     return false;
 
-  return buildArchiveTree(dirEnd);
+  if (_version == mzip::Version::Mrs3)
+  {
+    return MGbuildArchiveTree(dirEnd);
+  }
+  else
+  {
+    return buildArchiveTree(dirEnd);
+  }
 }
 
 bool MZip::openArchiveForced() { return false; }
@@ -196,6 +213,13 @@ zip::CentralDirectoryFileHeader MZip::getCentralHeader()
   return dirHeader;
 }
 
+zip::LocalFileHeader MZip::getLocalFileHeader()
+{
+  zip::LocalFileHeader fileHeader{};
+  fetchHeaderData(&fileHeader);
+  return fileHeader;
+}
+
 std::string MZip::getNextHeaderString(std::size_t length)
 {
   std::string str(length, '\0');
@@ -212,6 +236,10 @@ template <typename T> bool MZip::checkSignature(T &_struct)
              _struct.Signature == mzip::v1::LocalFileHeaderSignature2;
     else if (_version == mzip::Version::Mrs2)
       return _struct.Signature == mzip::v2::LocalFileHeaderSignature;
+    else if (_version == mzip::Version::Mrs3)
+      return _struct.Signature == mzip::v3::LocalFileHeaderSignature ||
+             _struct.Signature == mzip::v3::LocalFileHeaderSignature2 ||
+             _struct.Signature == mzip::v3::LocalFileHeaderSignature3;
     else
       return false;
   }
@@ -221,6 +249,8 @@ template <typename T> bool MZip::checkSignature(T &_struct)
       return _struct.Signature == mzip::v1::CentralDirectorySignature;
     else if (_version == mzip::Version::Mrs2)
       return _struct.Signature == mzip::v2::CentralDirectorySignature;
+    else if (_version == mzip::Version::Mrs3)
+      return _struct.Signature == mzip::v3::CentralDirectorySignature;
     else
       return false;
   }
@@ -232,6 +262,8 @@ template <typename T> bool MZip::checkSignature(T &_struct)
     else if (_version == mzip::Version::Mrs2)
       return _struct.Signature == mzip::v2::CentralDirectoryEndSignature ||
              _struct.Signature == mzip::v2::CentralDirectoryEndSignature2;
+    else if (_version == mzip::Version::Mrs3)
+      return _struct.Signature == mzip::v3::CentralDirectoryEndSignature;
     else
       return false;
   }
@@ -260,9 +292,54 @@ bool MZip::buildArchiveTree(zip::EndOfCentralDirectoryRecord dirEnd)
   return true;
 }
 
+bool MZip::MGbuildArchiveTree(zip::EndOfCentralDirectoryRecord dirEnd)
+{
+  ArchiveTree = std::make_shared<ZipTree>();
+
+  archiveFile->seekg(0, std::ios::beg);
+
+  for (uint16_t i = 0; i < dirEnd.DirectoryCountOnDisk; ++i)
+  {
+    auto fileheaderoffset = archiveFile->tellg();
+    auto localHeader = getLocalFileHeader();
+
+    auto FileName = getNextHeaderString(localHeader.FileNameLength);
+
+    ArchiveTree->insert(FileName, toCentralDirectory(localHeader, fileheaderoffset));
+
+    archiveFile->seekg(localHeader.ExtraFieldLength + localHeader.CompressedSize, std::ios::cur);
+  }
+
+  return true;
+}
+
 //------------------------------------------------------------------------------
 // ZIP structure helpers
 //------------------------------------------------------------------------------
+
+zip::CentralDirectoryFileHeader MZip::toCentralDirectory(const zip::LocalFileHeader &local, std::uint32_t headerOffset)
+{
+  zip::CentralDirectoryFileHeader central{};
+
+  central.Signature = mzip::v3::CentralDirectorySignature;
+  central.Version = local.Version;
+  central.MinVersion = local.Version;
+  central.BitFlag = local.Flags;
+  central.CompressionMethod = local.Compression;
+  central.LastModified = local.LastModified;
+  central.CRC32 = local.CRC32;
+  central.CompressedSize = local.CompressedSize;
+  central.UncompressedSize = local.UncompressedSize;
+  central.FileNameLength = local.FileNameLength;
+  central.ExtraFieldLength = local.ExtraFieldLength;
+  central.CommentLength = 0;
+  central.DiskStartNum = 0;
+  central.InternalFileAttributes = 0;
+  central.ExternalFileAttributes = 0;
+  central.FileHeaderOffset = headerOffset;
+
+  return central;
+}
 
 zip::LocalFileHeader MZip::makeLocalHeader(const zip::CentralDirectoryFileHeader &central)
 {
@@ -325,6 +402,34 @@ void MZip::ConvertChar(std::span<char> data, bool recover)
   }
 }
 
+std::int32_t MZip::MG_GenerateSeedPart(std::int32_t input)
+{
+  constexpr uint32_t XOR_CONST = 0xDEAD1234;
+  constexpr uint32_t ADD_CONST = 0x00337799;
+
+  return (input ^ XOR_CONST) + ADD_CONST;
+}
+
+void MZip::MG_RecoveryChar(std::span<char> data, uint32_t seed)
+{
+  uint32_t prng = seed;
+
+  for (size_t i = 0; i < data.size(); ++i)
+  {
+    // Update PRNG every 4 bytes
+    if ((i & 3) == 0)
+    {
+      prng ^= prng << 13;
+      prng ^= prng >> 17;
+      prng ^= prng << 5;
+    }
+
+    // XOR with the corresponding PRNG byte
+    uint8_t kbyte = (prng >> ((i & 3) * 8)) & 0xFF;
+    data[i] ^= static_cast<char>(kbyte);
+  }
+}
+
 template <typename T> void MZip::fetchHeaderData(T *data, std::optional<std::size_t> size)
 {
   const auto dataSize = size.value_or(sizeof(*data));
@@ -333,6 +438,11 @@ template <typename T> void MZip::fetchHeaderData(T *data, std::optional<std::siz
   if (_version == mzip::Version::Mrs2)
   {
     ConvertChar({reinterpret_cast<char *>(data), dataSize}, true);
+  }
+
+  if (_version == mzip::Version::Mrs3)
+  {
+    MG_RecoveryChar({reinterpret_cast<char *>(data), dataSize}, MGSeed);
   }
 }
 

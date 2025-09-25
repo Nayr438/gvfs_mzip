@@ -42,6 +42,7 @@ struct CentralDirectoryFileHeader
   std::uint16_t InternalFileAttributes;
   std::uint32_t ExternalFileAttributes;
   std::uint32_t FileHeaderOffset;
+
   // FileName
   // ExtraField
   // FileComment
@@ -59,7 +60,6 @@ struct EndOfCentralDirectoryRecord
   std::uint16_t CommentLength;
   // Comment
 };
-
 
 } // namespace zip
 
