@@ -73,6 +73,7 @@ private:
   //These are split in the binary so I am going to leave them split here.
   std::int32_t MG_GenerateSeedPart(std::int32_t input);
   void MG_RecoveryChar(std::span<char> data, uint32_t seed);
+  void MG_K_RecoveryChar(std::span<char> data);
 
   // File signature mapping. This is technically not the way we should handle this, but it's a quick and dirty solution.
   const std::map<std::uint32_t, std::string_view> signatureMap = {{0x20000, ".tga"},

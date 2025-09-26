@@ -35,6 +35,8 @@ bool MZip::openArchive()
     ConvertChar({reinterpret_cast<char *>(&signature), sizeof(signature)}, true);
     if (signature == mzip::v2::LocalFileHeaderSignature)
       _version = mzip::Version::Mrs2;
+    else if (signature == mzip::MG2::LocalFileHeaderSignature)
+      _version = mzip::Version::MG2;
     else
     {
       // Right now only one seed is used, while I could just staticly set it, I am going to leave it like this for now.
@@ -54,7 +56,7 @@ bool MZip::openArchive()
   if (!checkSignature(dirEnd))
     return false;
 
-  if (_version == mzip::Version::Mrs3)
+  if (_version == mzip::Version::Mrs3 || _version == mzip::Version::MG2)
   {
     return MGbuildArchiveTree(dirEnd);
   }
@@ -128,12 +130,16 @@ void MZip::extractFile(std::string_view fileName, const std::filesystem::path &e
   }
 
   if (std::filesystem::exists(destPath))
-    return; // File already exists, skip extraction
+  {
+    std::cout << "File already exists: " << destPath << std::endl;
+    return;
+  }
 
   std::filesystem::create_directories(destPath.parent_path());
 
   std::ofstream outFile(destPath, std::ios::binary);
   outFile.write(file.get(), node->fileHeader.UncompressedSize);
+  std::cout << "Extracted file: " << fileName << " to " << destPath << std::endl;
 }
 
 void MZip::extractFiles(const std::vector<std::string> &files, const std::filesystem::path &extractPath)
@@ -234,7 +240,7 @@ template <typename T> bool MZip::checkSignature(T &_struct)
     if (_version == mzip::Version::Mrs1)
       return _struct.Signature == mzip::v1::LocalFileHeaderSignature ||
              _struct.Signature == mzip::v1::LocalFileHeaderSignature2;
-    else if (_version == mzip::Version::Mrs2)
+    else if (_version == mzip::Version::Mrs2 || _version == mzip::Version::MG2)
       return _struct.Signature == mzip::v2::LocalFileHeaderSignature;
     else if (_version == mzip::Version::Mrs3)
       return _struct.Signature == mzip::v3::LocalFileHeaderSignature ||
@@ -251,6 +257,9 @@ template <typename T> bool MZip::checkSignature(T &_struct)
       return _struct.Signature == mzip::v2::CentralDirectorySignature;
     else if (_version == mzip::Version::Mrs3)
       return _struct.Signature == mzip::v3::CentralDirectorySignature;
+    else if (_version == mzip::Version::MG2)
+      return _struct.Signature == mzip::MG2::CentralDirectorySignature ||
+             _struct.Signature == mzip::MG2::CentralDirectorySignature2;
     else
       return false;
   }
@@ -259,7 +268,7 @@ template <typename T> bool MZip::checkSignature(T &_struct)
     if (_version == mzip::Version::Mrs1)
       return _struct.Signature == mzip::v1::CentralDirectoryEndSignature ||
              _struct.Signature == mzip::v1::CentralDirectoryEndSignature2;
-    else if (_version == mzip::Version::Mrs2)
+    else if (_version == mzip::Version::Mrs2 || _version == mzip::Version::MG2)
       return _struct.Signature == mzip::v2::CentralDirectoryEndSignature ||
              _struct.Signature == mzip::v2::CentralDirectoryEndSignature2;
     else if (_version == mzip::Version::Mrs3)
@@ -429,6 +438,15 @@ void MZip::MG_RecoveryChar(std::span<char> data, uint32_t seed)
     data[i] ^= static_cast<char>(kbyte);
   }
 }
+//Thanks to Duzopy / WhyWolfie for providing this
+void MZip::MG_K_RecoveryChar(std::span<char> data)
+{
+  uint8_t key[18] = { 15, 175, 42, 3, 133, 66, 147, 103, 210, 220, 162, 64, 141, 113, 153, 247, 191, 153 };
+  for (size_t i = 0; i < data.size(); ++i)
+  {
+      data[i] ^= static_cast<char>(key[i % 18]);
+  }
+}
 
 template <typename T> void MZip::fetchHeaderData(T *data, std::optional<std::size_t> size)
 {
@@ -443,6 +461,11 @@ template <typename T> void MZip::fetchHeaderData(T *data, std::optional<std::siz
   if (_version == mzip::Version::Mrs3)
   {
     MG_RecoveryChar({reinterpret_cast<char *>(data), dataSize}, MGSeed);
+  }
+
+  if (_version == mzip::Version::MG2)
+  {
+    MG_K_RecoveryChar({reinterpret_cast<char *>(data), dataSize});
   }
 }
 

@@ -1,3 +1,4 @@
+
 executable('mzipcli',
     ['src/main.cpp'],
     dependencies: mzip_dep,
