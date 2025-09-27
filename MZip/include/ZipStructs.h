@@ -5,7 +5,8 @@
 
 namespace zip
 {
-static constexpr std::uint32_t Signature = 0x04034b50;
+static constexpr std::uint32_t LocalFileHeaderSignature = 0x04034b50;
+static constexpr std::uint32_t CentralDirectoryFileHeaderSignature = 0x02014b50;
 
 struct LocalFileHeader
 {

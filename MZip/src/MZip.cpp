@@ -28,40 +28,39 @@ bool MZip::openArchive()
 
   archiveFile->read(reinterpret_cast<char *>(&signature), sizeof(signature));
 
-  if (signature == mzip::v1::LocalFileHeaderSignature || signature == mzip::v1::LocalFileHeaderSignature2)
-    _version = mzip::Version::Mrs1;
-  else
+  switch (signature)
   {
-    ConvertChar({reinterpret_cast<char *>(&signature), sizeof(signature)}, true);
-    if (signature == mzip::v2::LocalFileHeaderSignature)
-      _version = mzip::Version::Mrs2;
-    else if (signature == mzip::MG2::LocalFileHeaderSignature)
-      _version = mzip::Version::MG2;
-    else
-    {
-      // Right now only one seed is used, while I could just staticly set it, I am going to leave it like this for now.
-      MGSeed = MG_GenerateSeedPart(0x7693d7fb);
-      MG_RecoveryChar({reinterpret_cast<char *>(&signature), sizeof(signature)}, MGSeed);
-      if (signature == mzip::v3::LocalFileHeaderSignature)
-        _version = mzip::Version::Mrs3;
-      else
-        return false;
-    }
+  case mzip::v1::Signature:
+    _version = mzip::Version::Mrs1;
+    break;
+  case mzip::v2::Signature:
+  case mzip::v1::Signature2:
+    _version = mzip::Version::Mrs2;
+    break;
+  case mzip::MG2::Signature:
+    _version = mzip::Version::MG2;
+    break;
+  case mzip::v3::Signature:
+    MGSeed = MG_GenerateSeedPart(mzip::v3::RecoverySeed);
+    _version = mzip::Version::Mrs3;
+    break;
+  default:
+    return false;
   }
 
   auto dirEnd = getEndRecord();
 
-  archiveFile->seekg(dirEnd.CentralDirectoryOffset, std::ios::beg);
-
   if (!checkSignature(dirEnd))
     return false;
 
-  if (_version == mzip::Version::Mrs3 || _version == mzip::Version::MG2)
+  archiveFile->seekg(dirEnd.CentralDirectoryOffset, std::ios::beg);
+
+  switch (_version)
   {
+  case mzip::Version::Mrs3:
+  case mzip::Version::MG2:
     return MGbuildArchiveTree(dirEnd);
-  }
-  else
-  {
+  default:
     return buildArchiveTree(dirEnd);
   }
 }
@@ -125,9 +124,7 @@ void MZip::extractFile(std::string_view fileName, const std::filesystem::path &e
 
   auto destPath = extractPath;
   if (std::filesystem::is_directory(destPath))
-  {
     destPath /= std::filesystem::path(fileName).filename();
-  }
 
   if (std::filesystem::exists(destPath))
   {
@@ -172,7 +169,7 @@ void MZip::extractDirectory(std::string_view dirPath, const std::filesystem::pat
     if (!currentNode)
       return;
 
-    if (!currentNode->isDirectory)
+    if (currentNode->isFile())
     {
       // Extract file directly
       auto destPath = basePath / std::filesystem::path(currentPath);
@@ -237,44 +234,55 @@ template <typename T> bool MZip::checkSignature(T &_struct)
 {
   if constexpr (std::is_same_v<T, zip::LocalFileHeader>)
   {
-    if (_version == mzip::Version::Mrs1)
-      return _struct.Signature == mzip::v1::LocalFileHeaderSignature ||
-             _struct.Signature == mzip::v1::LocalFileHeaderSignature2;
-    else if (_version == mzip::Version::Mrs2 || _version == mzip::Version::MG2)
+    switch (_version)
+    {
+    case mzip::Version::Mrs1:
+      return _struct.Signature == mzip::v1::LocalFileHeaderSignature;
+    case mzip::Version::Mrs2:
       return _struct.Signature == mzip::v2::LocalFileHeaderSignature;
-    else if (_version == mzip::Version::Mrs3)
+    case mzip::Version::Mrs3:
       return _struct.Signature == mzip::v3::LocalFileHeaderSignature ||
-             _struct.Signature == mzip::v3::LocalFileHeaderSignature2 ||
-             _struct.Signature == mzip::v3::LocalFileHeaderSignature3;
-    else
+             _struct.Signature == mzip::v3::LocalFileHeaderSignature2;
+    case mzip::Version::MG2:
+      return _struct.Signature == mzip::MG2::LocalFileHeaderSignature;
+    default:
       return false;
+    }
   }
   else if constexpr (std::is_same_v<T, zip::CentralDirectoryFileHeader>)
   {
-    if (_version == mzip::Version::Mrs1)
+    switch (_version)
+    {
+    case mzip::Version::Mrs1:
       return _struct.Signature == mzip::v1::CentralDirectorySignature;
-    else if (_version == mzip::Version::Mrs2)
+    case mzip::Version::Mrs2:
       return _struct.Signature == mzip::v2::CentralDirectorySignature;
-    else if (_version == mzip::Version::Mrs3)
+    case mzip::Version::Mrs3:
       return _struct.Signature == mzip::v3::CentralDirectorySignature;
-    else if (_version == mzip::Version::MG2)
+    case mzip::Version::MG2:
       return _struct.Signature == mzip::MG2::CentralDirectorySignature ||
              _struct.Signature == mzip::MG2::CentralDirectorySignature2;
-    else
+    default:
       return false;
+    }
   }
   else if constexpr (std::is_same_v<T, zip::EndOfCentralDirectoryRecord>)
   {
-    if (_version == mzip::Version::Mrs1)
+    switch (_version)
+    {
+    case mzip::Version::Mrs1:
       return _struct.Signature == mzip::v1::CentralDirectoryEndSignature ||
              _struct.Signature == mzip::v1::CentralDirectoryEndSignature2;
-    else if (_version == mzip::Version::Mrs2 || _version == mzip::Version::MG2)
+    case mzip::Version::Mrs2:
       return _struct.Signature == mzip::v2::CentralDirectoryEndSignature ||
              _struct.Signature == mzip::v2::CentralDirectoryEndSignature2;
-    else if (_version == mzip::Version::Mrs3)
+    case mzip::Version::Mrs3:
       return _struct.Signature == mzip::v3::CentralDirectoryEndSignature;
-    else
+    case mzip::Version::MG2:
+      return _struct.Signature == mzip::MG2::CentralDirectoryEndSignature;
+    default:
       return false;
+    }
   }
   return false;
 }
@@ -352,7 +360,7 @@ zip::CentralDirectoryFileHeader MZip::toCentralDirectory(const zip::LocalFileHea
 
 zip::LocalFileHeader MZip::makeLocalHeader(const zip::CentralDirectoryFileHeader &central)
 {
-  return {.Signature = zip::Signature,
+  return {.Signature = zip::LocalFileHeaderSignature,
           .Version = central.Version,
           .Flags = central.BitFlag,
           .Compression = central.CompressionMethod,
@@ -401,6 +409,14 @@ zip::EndOfCentralDirectoryRecord MZip::makeCentralEnd(uint16_t fileCount, uint32
 // Data processing
 //------------------------------------------------------------------------------
 
+std::int32_t MZip::MG_GenerateSeedPart(std::int32_t input)
+{
+  constexpr uint32_t XOR_CONST = 0xDEAD1234;
+  constexpr uint32_t ADD_CONST = 0x00337799;
+
+  return (input ^ XOR_CONST) + ADD_CONST;
+}
+
 void MZip::ConvertChar(std::span<char> data, bool recover)
 {
   for (char &c : data)
@@ -409,14 +425,6 @@ void MZip::ConvertChar(std::span<char> data, bool recover)
     std::uint8_t result = recover ? ((b >> 3) | (b << 5)) ^ 0xFF : ((b << 3) | (b >> 5));
     c = static_cast<char>(result & 0xFF);
   }
-}
-
-std::int32_t MZip::MG_GenerateSeedPart(std::int32_t input)
-{
-  constexpr uint32_t XOR_CONST = 0xDEAD1234;
-  constexpr uint32_t ADD_CONST = 0x00337799;
-
-  return (input ^ XOR_CONST) + ADD_CONST;
 }
 
 void MZip::MG_RecoveryChar(std::span<char> data, uint32_t seed)
@@ -438,13 +446,13 @@ void MZip::MG_RecoveryChar(std::span<char> data, uint32_t seed)
     data[i] ^= static_cast<char>(kbyte);
   }
 }
-//Thanks to Duzopy / WhyWolfie for providing this
+// Thanks to Duzopy / WhyWolfie for providing this
 void MZip::MG_K_RecoveryChar(std::span<char> data)
 {
-  uint8_t key[18] = { 15, 175, 42, 3, 133, 66, 147, 103, 210, 220, 162, 64, 141, 113, 153, 247, 191, 153 };
+  uint8_t key[18] = {15, 175, 42, 3, 133, 66, 147, 103, 210, 220, 162, 64, 141, 113, 153, 247, 191, 153};
   for (size_t i = 0; i < data.size(); ++i)
   {
-      data[i] ^= static_cast<char>(key[i % 18]);
+    data[i] ^= static_cast<char>(key[i % 18]);
   }
 }
 
@@ -453,19 +461,20 @@ template <typename T> void MZip::fetchHeaderData(T *data, std::optional<std::siz
   const auto dataSize = size.value_or(sizeof(*data));
 
   archiveFile->read(reinterpret_cast<char *>(data), dataSize);
-  if (_version == mzip::Version::Mrs2)
+
+  switch (_version)
   {
+  case mzip::Version::Mrs2:
     ConvertChar({reinterpret_cast<char *>(data), dataSize}, true);
-  }
-
-  if (_version == mzip::Version::Mrs3)
-  {
+    break;
+  case mzip::Version::Mrs3:
     MG_RecoveryChar({reinterpret_cast<char *>(data), dataSize}, MGSeed);
-  }
-
-  if (_version == mzip::Version::MG2)
-  {
+    break;
+  case mzip::Version::MG2:
     MG_K_RecoveryChar({reinterpret_cast<char *>(data), dataSize});
+    break;
+  default:
+    break;
   }
 }
 

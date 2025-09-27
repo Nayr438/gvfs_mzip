@@ -13,6 +13,7 @@ struct ZipNode
   zip::CentralDirectoryFileHeader fileHeader;
 
   ZipNode(const std::string &n, bool dir) : name(n), isDirectory(dir) {}
+  bool isFile() const { return !isDirectory; }
 };
 
 class ZipTree

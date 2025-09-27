@@ -13,23 +13,16 @@ void ZipTree::print(const ZipNode *node, int depth, const std::vector<bool> &isL
   {
     if (i == depth - 1)
     {
-      std::cout << (isLast[i] ? "└── " : "├── ");
+      std::printf("%s", (isLast[i] ? "+-- " : "+-- "));
     }
     else
     {
-      std::cout << (isLast[i] ? "    " : "│   ");
+      std::printf("%s", (isLast[i] ? "    " : "|   "));
     }
   }
 
-  // Print node name and type
-  if (node->isDirectory)
-  {
-    std::cout << "\033[1;34m" << node->name << "\033[0m\n";
-  }
-  else
-  {
-    std::cout << "\033[1;32m" << node->name << "\033[0m\n";
-  }
+  // Print node name
+  std::printf("%s\n", node->name.c_str());
 
   // Print children (directories first, then files)
   const auto &children = node->children;
